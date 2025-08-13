@@ -7,53 +7,59 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
   PROJECT_ID: ${{ secrets.PROJECT_ID }}
   REGION: ${{ secrets.REGION }}
   REPO: ${{ secrets.REPO }}
   BACKEND_SERVICE: ${{ secrets.BACKEND_SERVICE }}
+  # Image tag for this commit
   IMAGE: ${{ secrets.REGION }}-docker.pkg.dev/${{ secrets.PROJECT_ID }}/${{ secrets.REPO }}/backend:${{ github.sha }}
 
 jobs:
   deploy-backend:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 1) Auth to GCP with the SA key secret
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      # 2) Install gcloud (optional, but helpful)
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
         with:
-          project_id: ${{ secrets.PROJECT_ID }}
+          project_id: ${{ env.PROJECT_ID }}
 
-      # 3) Docker login to Artifact Registry
       - name: Configure Docker auth
-        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev -q
+        run: gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
 
-      # 4) Build & push image
       - name: Build image
-        run: docker build -t "$IMAGE" -f backend/Dockerfile backend
+        run: docker build -t "$IMAGE" ./backend
 
       - name: Push image
         run: docker push "$IMAGE"
 
-      # 5) Deploy to Cloud Run (secrets/env already set on the service, so we just swap the image)
       - name: Deploy to Cloud Run
         run: >
           gcloud run deploy "$BACKEND_SERVICE"
-          --image "$IMAGE"
           --region "$REGION"
+          --image "$IMAGE"
           --platform managed
+          --allow-unauthenticated
           --quiet
+          # If you ever need to (first-time only), uncomment the next two lines:
+          # --set-env-vars=CORS_ORIGIN=${{ secrets.FRONTEND_URL }},NODE_ENV=production
+          # --update-secrets=MONGO_URI=MONGODB_URI:latest,JWT_SECRET=JWT_SECRET:latest
 
-      # 6) Quick smoke check
+      - name: Get service URL
+        run: |
+          URL=$(gcloud run services describe "$BACKEND_SERVICE" --region "$REGION" --format='value(status.url)')
+          echo "SERVICE_URL=$URL" >> "$GITHUB_ENV"
+
       - name: Smoke check
-        run: curl -fsS https://$BACKEND_SERVICE-$REGION.a.run.app/health || exit 1
+        run: curl -fsS "$SERVICE_URL/health"
