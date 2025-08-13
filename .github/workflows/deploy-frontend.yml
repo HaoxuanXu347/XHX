@@ -1,0 +1,65 @@
+name: Deploy Frontend (Cloud Run)
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'Dockerfile.frontend'
+      - 'nginx.conf.template'
+      - '.github/workflows/deploy-frontend.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: frontend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: ${{ secrets.PROJECT_ID }}
+      REGION: ${{ secrets.REGION }}
+      REPO: ${{ secrets.REPO }}
+      FRONTEND_SERVICE: ${{ secrets.FRONTEND_SERVICE }}
+      BACKEND_URL: ${{ secrets.BACKEND_URL }}
+      IMAGE: ${{ secrets.REGION }}-docker.pkg.dev/${{ secrets.PROJECT_ID }}/${{ secrets.REPO }}/frontend:${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.PROJECT_ID }}
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+          export_default_credentials: true
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker $REGION-docker.pkg.dev --quiet
+
+      - name: Ensure .env.production points to backend
+        run: |
+          echo "VITE_API_BASE_URL=$BACKEND_URL" > .env.production
+          cat .env.production
+
+      - name: Build image
+        run: docker build -f Dockerfile.frontend -t "$IMAGE" .
+
+      - name: Push image
+        run: docker push "$IMAGE"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "$FRONTEND_SERVICE" \
+            --image="$IMAGE" \
+            --region="$REGION" \
+            --allow-unauthenticated
+
+      - name: Smoke check
+        run: curl -fsS "${{ secrets.FRONTEND_URL }}"
