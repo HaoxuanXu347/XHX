@@ -1,0 +1,18 @@
+# --- build stage (Vite) ---
+FROM node:20-alpine AS build
+WORKDIR /app
+# Removed: ENV NODE_ENV=production
+COPY package.json package-lock.json ./
+RUN npm ci   # installs devDeps too
+COPY . .
+# ensures the .env.production gets picked up by Vite
+RUN npm run build
+
+# --- run stage (Nginx) ---
+FROM nginx:1.27-alpine
+ENV PORT=8080
+# Use a template so nginx listens on $PORT (Cloud Run injects PORT)
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]
