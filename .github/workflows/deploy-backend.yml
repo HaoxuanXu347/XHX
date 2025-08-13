@@ -2,60 +2,58 @@ name: Deploy Backend (Cloud Run)
 
 on:
   push:
-    branches: [ "main" ]
-    paths:
-      - 'backend/**'
-      - '.github/workflows/deploy-backend.yml'
-  workflow_dispatch: {}
+    branches: [main]
+  workflow_dispatch:
 
-concurrency:
-  group: backend-${{ github.ref }}
-  cancel-in-progress: true
+permissions:
+  contents: read
+
+env:
+  PROJECT_ID: ${{ secrets.PROJECT_ID }}
+  REGION: ${{ secrets.REGION }}
+  REPO: ${{ secrets.REPO }}
+  BACKEND_SERVICE: ${{ secrets.BACKEND_SERVICE }}
+  IMAGE: ${{ secrets.REGION }}-docker.pkg.dev/${{ secrets.PROJECT_ID }}/${{ secrets.REPO }}/backend:${{ github.sha }}
 
 jobs:
   deploy-backend:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      PROJECT_ID: ${{ secrets.PROJECT_ID }}
-      REGION: ${{ secrets.REGION }}
-      REPO: ${{ secrets.REPO }}
-      BACKEND_SERVICE: ${{ secrets.BACKEND_SERVICE }}
-      FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
-      IMAGE: ${{ secrets.REGION }}-docker.pkg.dev/${{ secrets.PROJECT_ID }}/${{ secrets.REPO }}/backend:${{ github.sha }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 1) Auth to GCP with the SA key secret
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      # 2) Install gcloud (optional, but helpful)
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.PROJECT_ID }}
-          service_account_key: ${{ secrets.GCP_SA_KEY }}
-          export_default_credentials: true
 
+      # 3) Docker login to Artifact Registry
       - name: Configure Docker auth
-        run: gcloud auth configure-docker $REGION-docker.pkg.dev --quiet
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev -q
 
+      # 4) Build & push image
       - name: Build image
-        working-directory: backend
-        run: docker build -t "$IMAGE" .
+        run: docker build -t "$IMAGE" -f backend/Dockerfile backend
 
       - name: Push image
         run: docker push "$IMAGE"
 
+      # 5) Deploy to Cloud Run (secrets/env already set on the service, so we just swap the image)
       - name: Deploy to Cloud Run
-        run: |
-          gcloud run deploy "$BACKEND_SERVICE" \
-            --image="$IMAGE" \
-            --region="$REGION" \
-            --allow-unauthenticated \
-            --port=8080 \
-            --update-secrets=MONGO_URI=MONGODB_URI:latest,JWT_SECRET=JWT_SECRET:latest \
-            --set-env-vars=NODE_ENV=production,CORS_ORIGIN="$FRONTEND_URL"
+        run: >
+          gcloud run deploy "$BACKEND_SERVICE"
+          --image "$IMAGE"
+          --region "$REGION"
+          --platform managed
+          --quiet
 
-      - name: Health check
-        run: curl -fsS "${{ secrets.BACKEND_URL }}/health"
+      # 6) Quick smoke check
+      - name: Smoke check
+        run: curl -fsS https://$BACKEND_SERVICE-$REGION.a.run.app/health || exit 1
